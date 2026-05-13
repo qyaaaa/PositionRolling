@@ -1,19 +1,19 @@
 const defaultState = {
-  schemaVersion: 2,
+  schemaVersion: 3,
   direction: "long",
   equity: 1000,
   leverage: 25,
   maintenanceRate: 0.5,
   feeRate: 0.04,
   reserveRate: 20,
-  targetPrice: 0.13,
-  stopPrice: 0.065,
+  targetPrice: 0.145,
+  stopPrice: 0.088,
   legs: [
     { price: 0.1, margin: 40, leverage: 25, note: "DOGE 首仓" },
-    { price: 0.092, margin: 50, leverage: 20, note: "第一档降杠杆" },
-    { price: 0.084, margin: 70, leverage: 15, note: "第二档降杠杆" },
-    { price: 0.076, margin: 90, leverage: 10, note: "第三档降杠杆" },
-    { price: 0.068, margin: 120, leverage: 5, note: "防守档" },
+    { price: 0.108, margin: 50, leverage: 20, note: "上行第一档降杠杆" },
+    { price: 0.116, margin: 70, leverage: 15, note: "上行第二档降杠杆" },
+    { price: 0.124, margin: 90, leverage: 10, note: "上行第三档降杠杆" },
+    { price: 0.132, margin: 120, leverage: 5, note: "高位防守档" },
   ],
 };
 
@@ -276,16 +276,16 @@ function renderChart(result) {
 
   drawAxis(ctx, width, height, low, high);
   result.enriched.forEach((leg, index) => {
-    drawMarker(ctx, x(leg.price), 98 + (index % 2) * 42, "#17201b", `#${index + 1}`, leg.price);
+    drawMarker(ctx, x(leg.price), 98 + (index % 2) * 42, "#f4f7fb", `#${index + 1}`, leg.price);
   });
-  if (result.avgEntry > 0) drawLineMarker(ctx, x(result.avgEntry), height, "#0f8b72", "均价");
-  if (result.liquidationPrice > 0) drawLineMarker(ctx, x(result.liquidationPrice), height, "#b73535", "强平");
-  if (toNumber(state.targetPrice) > 0) drawLineMarker(ctx, x(toNumber(state.targetPrice)), height, "#3267a8", "目标");
-  if (toNumber(state.stopPrice) > 0) drawLineMarker(ctx, x(toNumber(state.stopPrice)), height, "#b7791f", "止损");
+  if (result.avgEntry > 0) drawLineMarker(ctx, x(result.avgEntry), height, "#35d0aa", "均价");
+  if (result.liquidationPrice > 0) drawLineMarker(ctx, x(result.liquidationPrice), height, "#ff6b74", "强平");
+  if (toNumber(state.targetPrice) > 0) drawLineMarker(ctx, x(toNumber(state.targetPrice)), height, "#74a7ff", "目标");
+  if (toNumber(state.stopPrice) > 0) drawLineMarker(ctx, x(toNumber(state.stopPrice)), height, "#f2b84b", "止损");
 }
 
 function drawEmptyChart(ctx, width, height) {
-  ctx.fillStyle = "#66736c";
+  ctx.fillStyle = "#8b9aae";
   ctx.font = "700 14px system-ui";
   ctx.textAlign = "center";
   ctx.fillText("添加滚仓批次后显示价格阶梯", width / 2, height / 2);
@@ -293,14 +293,14 @@ function drawEmptyChart(ctx, width, height) {
 
 function drawAxis(ctx, width, height, low, high) {
   const y = height - 56;
-  ctx.strokeStyle = "#d9d3c7";
+  ctx.strokeStyle = "#263241";
   ctx.lineWidth = 1;
   ctx.beginPath();
   ctx.moveTo(36, y);
   ctx.lineTo(width - 36, y);
   ctx.stroke();
 
-  ctx.fillStyle = "#66736c";
+  ctx.fillStyle = "#8b9aae";
   ctx.font = "700 12px system-ui";
   ctx.textAlign = "left";
   ctx.fillText(formatPrice(low), 36, y + 28);
@@ -313,11 +313,11 @@ function drawMarker(ctx, x, y, color, label, price) {
   ctx.beginPath();
   ctx.arc(x, y, 7, 0, Math.PI * 2);
   ctx.fill();
-  ctx.fillStyle = "#17201b";
+  ctx.fillStyle = "#f4f7fb";
   ctx.font = "800 12px system-ui";
   ctx.textAlign = "center";
   ctx.fillText(label, x, y - 14);
-  ctx.fillStyle = "#66736c";
+  ctx.fillStyle = "#8b9aae";
   ctx.font = "700 11px system-ui";
   ctx.fillText(formatPrice(price), x, y + 24);
 }
@@ -376,7 +376,7 @@ function addLeg() {
     leverage: toNumber(state.leverage, 25),
     note: "",
   };
-  const priceMultiplier = state.direction === "long" ? 0.92 : 1.08;
+  const priceMultiplier = state.direction === "long" ? 1.08 : 0.92;
   state.legs.push({
     price: roundPrice(last.price * priceMultiplier),
     margin: last.margin,
