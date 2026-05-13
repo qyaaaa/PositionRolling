@@ -1,16 +1,19 @@
 const defaultState = {
+  schemaVersion: 2,
   direction: "long",
-  equity: 10000,
-  leverage: 5,
+  equity: 1000,
+  leverage: 25,
   maintenanceRate: 0.5,
   feeRate: 0.04,
-  reserveRate: 15,
-  targetPrice: 73500,
-  stopPrice: 61200,
+  reserveRate: 20,
+  targetPrice: 0.13,
+  stopPrice: 0.065,
   legs: [
-    { price: 65000, margin: 800, note: "首仓" },
-    { price: 63000, margin: 650, note: "回踩补仓" },
-    { price: 60000, margin: 550, note: "深回撤滚入" },
+    { price: 0.1, margin: 40, leverage: 25, note: "DOGE 首仓" },
+    { price: 0.092, margin: 50, leverage: 20, note: "第一档降杠杆" },
+    { price: 0.084, margin: 70, leverage: 15, note: "第二档降杠杆" },
+    { price: 0.076, margin: 90, leverage: 10, note: "第三档降杠杆" },
+    { price: 0.068, margin: 120, leverage: 5, note: "防守档" },
   ],
 };
 
@@ -40,10 +43,25 @@ const compact = new Intl.NumberFormat("zh-CN", {
 function loadState() {
   try {
     const stored = localStorage.getItem("position-rolling-state");
-    return stored ? { ...defaultState, ...JSON.parse(stored) } : structuredClone(defaultState);
+    const parsed = stored ? JSON.parse(stored) : null;
+    return parsed?.schemaVersion === defaultState.schemaVersion
+      ? normalizeState({ ...defaultState, ...parsed })
+      : structuredClone(defaultState);
   } catch {
     return structuredClone(defaultState);
   }
+}
+
+function normalizeState(value) {
+  return {
+    ...value,
+    legs: (value.legs || defaultState.legs).map((leg) => ({
+      price: toNumber(leg.price),
+      margin: toNumber(leg.margin),
+      leverage: Math.max(toNumber(leg.leverage, value.leverage || defaultState.leverage), 1),
+      note: leg.note || "",
+    })),
+  };
 }
 
 function persist() {
@@ -67,7 +85,6 @@ function signedPnl(price, avgEntry, quantity, direction) {
 }
 
 function calculate() {
-  const leverage = Math.max(toNumber(state.leverage, 1), 1);
   const equity = Math.max(toNumber(state.equity), 0);
   const feeRate = pct(state.feeRate);
   const maintenanceRate = pct(state.maintenanceRate);
@@ -76,12 +93,13 @@ function calculate() {
     .map((leg) => ({
       price: Math.max(toNumber(leg.price), 0),
       margin: Math.max(toNumber(leg.margin), 0),
+      leverage: Math.max(toNumber(leg.leverage, state.leverage), 1),
       note: leg.note || "",
     }))
     .filter((leg) => leg.price > 0 && leg.margin > 0);
 
   const enriched = validLegs.map((leg) => {
-    const notional = leg.margin * leverage;
+    const notional = leg.margin * leg.leverage;
     return {
       ...leg,
       notional,
@@ -93,6 +111,7 @@ function calculate() {
   const totalQuantity = enriched.reduce((sum, leg) => sum + leg.quantity, 0);
   const marginUsed = enriched.reduce((sum, leg) => sum + leg.margin, 0);
   const avgEntry = totalQuantity > 0 ? totalNotional / totalQuantity : 0;
+  const averageLeverage = marginUsed > 0 ? totalNotional / marginUsed : 0;
   const openFee = totalNotional * feeRate;
   const closeFee = totalNotional * feeRate;
   const estimatedFees = openFee + closeFee;
@@ -123,6 +142,7 @@ function calculate() {
     totalQuantity,
     marginUsed,
     avgEntry,
+    averageLeverage,
     openFee,
     closeFee,
     estimatedFees,
@@ -144,7 +164,11 @@ function formatMoney(value) {
 
 function formatPrice(value) {
   if (!Number.isFinite(value) || value <= 0) return "-";
-  return money.format(value);
+  const digits = value < 10 ? 4 : 2;
+  return new Intl.NumberFormat("zh-CN", {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: value < 10 ? 6 : 2,
+  }).format(value);
 }
 
 function formatQuantity(value) {
@@ -160,8 +184,9 @@ function renderRows() {
     const row = document.createElement("tr");
     row.innerHTML = `
       <td class="row-index">#${index + 1}</td>
-      <td><input class="leg-input" type="number" min="0" step="0.01" inputmode="decimal" value="${leg.price}" data-index="${index}" data-key="price" aria-label="第 ${index + 1} 笔成交价"></td>
+      <td><input class="leg-input" type="number" min="0" step="0.0001" inputmode="decimal" value="${leg.price}" data-index="${index}" data-key="price" aria-label="第 ${index + 1} 笔成交价"></td>
       <td><input class="leg-input" type="number" min="0" step="0.01" inputmode="decimal" value="${leg.margin}" data-index="${index}" data-key="margin" aria-label="第 ${index + 1} 笔追加保证金"></td>
+      <td><input class="leg-input" type="number" min="1" step="1" inputmode="numeric" value="${leg.leverage ?? state.leverage}" data-index="${index}" data-key="leverage" aria-label="第 ${index + 1} 笔杠杆倍数"></td>
       <td><input class="note-input" type="text" value="${escapeHtml(leg.note || "")}" data-index="${index}" data-key="note" aria-label="第 ${index + 1} 笔备注"></td>
       <td><button class="delete-button" type="button" data-delete="${index}" title="删除第 ${index + 1} 笔" aria-label="删除第 ${index + 1} 笔">×</button></td>
     `;
@@ -181,6 +206,7 @@ function renderMetrics(result) {
   $("totalNotional").textContent = formatMoney(result.totalNotional);
   $("totalQuantity").textContent = formatQuantity(result.totalQuantity);
   $("avgEntry").textContent = formatPrice(result.avgEntry);
+  $("averageLeverage").textContent = result.averageLeverage > 0 ? `${result.averageLeverage.toFixed(2)}x` : "-";
   $("marginUsed").textContent = formatMoney(result.marginUsed);
   $("capitalUsage").textContent = `${(result.capitalUsage * 100).toFixed(2)}%`;
   $("availableCash").textContent = formatMoney(result.availableCash);
@@ -344,14 +370,25 @@ function updateLeg(event) {
 }
 
 function addLeg() {
-  const last = state.legs.at(-1) || { price: toNumber(state.targetPrice) || 100, margin: 100, note: "" };
-  const priceMultiplier = state.direction === "long" ? 0.97 : 1.03;
+  const last = state.legs.at(-1) || {
+    price: toNumber(state.targetPrice) || 0.1,
+    margin: 50,
+    leverage: toNumber(state.leverage, 25),
+    note: "",
+  };
+  const priceMultiplier = state.direction === "long" ? 0.92 : 1.08;
   state.legs.push({
-    price: Math.max(Math.round(last.price * priceMultiplier * 100) / 100, 0),
+    price: roundPrice(last.price * priceMultiplier),
     margin: last.margin,
-    note: "新增滚仓",
+    leverage: Math.max(toNumber(last.leverage, state.leverage) - 5, 1),
+    note: "新增降杠杆档",
   });
   render();
+}
+
+function roundPrice(value) {
+  const digits = value < 10 ? 10000 : 100;
+  return Math.max(Math.round(value * digits) / digits, 0);
 }
 
 function deleteLeg(event) {
@@ -374,7 +411,7 @@ async function exportResult() {
     "Position Rolling 计算结果",
     `方向：${state.direction === "long" ? "做多" : "做空"}`,
     `账户权益：${formatMoney(state.equity)} USDT`,
-    `杠杆：${state.leverage}x`,
+    `加权平均杠杆：${result.averageLeverage.toFixed(2)}x`,
     `总名义价值：${formatMoney(result.totalNotional)} USDT`,
     `总数量：${formatQuantity(result.totalQuantity)}`,
     `持仓均价：${formatPrice(result.avgEntry)}`,
@@ -384,6 +421,11 @@ async function exportResult() {
     `盈亏平衡价：${formatPrice(result.breakEvenPrice)}`,
     `目标价盈亏：${formatMoney(result.targetPnl)} USDT`,
     `止损价盈亏：${formatMoney(result.stopPnl)} USDT`,
+    "滚仓档位：",
+    ...result.enriched.map(
+      (leg, index) =>
+        `#${index + 1} ${formatPrice(leg.price)} / 保证金 ${formatMoney(leg.margin)} / ${leg.leverage}x / ${leg.note}`,
+    ),
   ];
 
   try {

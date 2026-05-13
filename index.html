@@ -33,7 +33,7 @@
             <input id="equity" type="number" min="0" step="0.01" inputmode="decimal" />
           </label>
           <label class="field">
-            <span>杠杆倍数</span>
+            <span>新档默认杠杆</span>
             <input id="leverage" type="number" min="1" step="1" inputmode="numeric" />
           </label>
           <label class="field">
@@ -62,7 +62,7 @@
           <div class="section-heading">
             <div>
               <h2 id="legs-title">滚仓计划</h2>
-              <p>按触发价与追加保证金计算每一笔后的仓位变化。</p>
+              <p>按触发价、保证金与本档杠杆计算每一笔后的仓位变化。</p>
             </div>
             <button class="ghost-button" id="exportButton" type="button">复制结果</button>
           </div>
@@ -73,6 +73,7 @@
                   <th>批次</th>
                   <th>触发/成交价</th>
                   <th>追加保证金</th>
+                  <th>本档杠杆</th>
                   <th>备注</th>
                   <th aria-label="删除"></th>
                 </tr>
@@ -109,6 +110,10 @@
             <div>
               <span>持仓均价</span>
               <strong id="avgEntry">-</strong>
+            </div>
+            <div>
+              <span>平均杠杆</span>
+              <strong id="averageLeverage">-</strong>
             </div>
             <div>
               <span>已用保证金</span>
@@ -161,7 +166,7 @@
           <p class="panel-kicker">Plan</p>
           <h2>首版方案</h2>
           <ol>
-            <li>V1.0：静态计算器、滚仓表格、均价/保证金/盈亏/风险线。</li>
+            <li>V1.0：静态计算器、分档杠杆、均价/保证金/盈亏/风险线。</li>
             <li>V1.1：加入导入导出、方案对比、移动端快捷输入。</li>
             <li>V1.2：加入行情接口、资金费率、逐仓/全仓模型切换。</li>
           </ol>
