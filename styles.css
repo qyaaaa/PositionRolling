@@ -233,7 +233,7 @@ h2 {
 
 table {
   width: 100%;
-  min-width: 840px;
+  min-width: 900px;
   border-collapse: collapse;
 }
 
@@ -267,6 +267,12 @@ tbody tr:last-child td {
   width: 64px;
   color: var(--muted);
   font-weight: 900;
+}
+
+.readonly-cell {
+  color: var(--ink);
+  font-weight: 900;
+  white-space: nowrap;
 }
 
 .delete-button {

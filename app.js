@@ -1,19 +1,18 @@
 const defaultState = {
-  schemaVersion: 3,
+  schemaVersion: 4,
   direction: "long",
   equity: 1000,
   leverage: 25,
   maintenanceRate: 0.5,
   feeRate: 0.04,
-  reserveRate: 20,
   targetPrice: 0.145,
   stopPrice: 0.088,
   legs: [
-    { price: 0.1, margin: 40, leverage: 25, note: "DOGE 首仓" },
-    { price: 0.108, margin: 50, leverage: 20, note: "上行第一档降杠杆" },
-    { price: 0.116, margin: 70, leverage: 15, note: "上行第二档降杠杆" },
-    { price: 0.124, margin: 90, leverage: 10, note: "上行第三档降杠杆" },
-    { price: 0.132, margin: 120, leverage: 5, note: "高位防守档" },
+    { price: 0.1, allocation: 10, leverage: 25 },
+    { price: 0.108, allocation: 15, leverage: 20 },
+    { price: 0.116, allocation: 20, leverage: 15 },
+    { price: 0.124, allocation: 25, leverage: 10 },
+    { price: 0.132, allocation: 30, leverage: 5 },
   ],
 };
 
@@ -23,7 +22,6 @@ const fields = [
   "leverage",
   "maintenanceRate",
   "feeRate",
-  "reserveRate",
   "targetPrice",
   "stopPrice",
 ];
@@ -57,9 +55,8 @@ function normalizeState(value) {
     ...value,
     legs: (value.legs || defaultState.legs).map((leg) => ({
       price: toNumber(leg.price),
-      margin: toNumber(leg.margin),
+      allocation: Math.max(toNumber(leg.allocation, 0), 0),
       leverage: Math.max(toNumber(leg.leverage, value.leverage || defaultState.leverage), 1),
-      note: leg.note || "",
     })),
   };
 }
@@ -77,6 +74,18 @@ function pct(value) {
   return toNumber(value) / 100;
 }
 
+function allocationTotal(legs = state.legs) {
+  return legs.reduce((sum, leg) => {
+    if (toNumber(leg.price) <= 0) return sum;
+    return sum + Math.max(toNumber(leg.allocation), 0);
+  }, 0);
+}
+
+function priceChange(price, basePrice) {
+  if (!price || !basePrice) return 0;
+  return ((price - basePrice) / basePrice) * 100;
+}
+
 function signedPnl(price, avgEntry, quantity, direction) {
   if (!price || !avgEntry || !quantity) return 0;
   return direction === "long"
@@ -88,20 +97,25 @@ function calculate() {
   const equity = Math.max(toNumber(state.equity), 0);
   const feeRate = pct(state.feeRate);
   const maintenanceRate = pct(state.maintenanceRate);
-  const reserveCash = equity * pct(state.reserveRate);
+  const totalAllocation = allocationTotal();
   const validLegs = state.legs
     .map((leg) => ({
       price: Math.max(toNumber(leg.price), 0),
-      margin: Math.max(toNumber(leg.margin), 0),
+      allocation: Math.max(toNumber(leg.allocation), 0),
       leverage: Math.max(toNumber(leg.leverage, state.leverage), 1),
-      note: leg.note || "",
     }))
-    .filter((leg) => leg.price > 0 && leg.margin > 0);
+    .filter((leg) => leg.price > 0 && leg.allocation > 0 && totalAllocation > 0);
+  const basePrice = validLegs[0]?.price || 0;
 
   const enriched = validLegs.map((leg) => {
-    const notional = leg.margin * leg.leverage;
+    const allocationPercent = (leg.allocation / totalAllocation) * 100;
+    const margin = equity * (allocationPercent / 100);
+    const notional = margin * leg.leverage;
     return {
       ...leg,
+      allocationPercent,
+      changePercent: priceChange(leg.price, basePrice),
+      margin,
       notional,
       quantity: notional / leg.price,
     };
@@ -116,8 +130,8 @@ function calculate() {
   const closeFee = totalNotional * feeRate;
   const estimatedFees = openFee + closeFee;
   const usedWithFees = marginUsed + openFee;
-  const availableCash = equity - reserveCash - usedWithFees;
-  const capitalUsage = equity > 0 ? usedWithFees / equity : 0;
+  const availableCash = Math.max(equity - marginUsed, 0);
+  const capitalUsage = equity > 0 ? marginUsed / equity : 0;
   const maintenanceMargin = totalNotional * maintenanceRate;
   const liquidationMove = totalQuantity > 0 ? Math.max(marginUsed - maintenanceMargin, 0) / totalQuantity : 0;
   const liquidationPrice =
@@ -149,7 +163,7 @@ function calculate() {
     usedWithFees,
     availableCash,
     capitalUsage,
-    reserveCash,
+    totalAllocation,
     liquidationPrice,
     breakEvenPrice,
     targetPnl,
@@ -176,18 +190,32 @@ function formatQuantity(value) {
   return compact.format(value);
 }
 
+function formatPercent(value) {
+  if (!Number.isFinite(value)) return "-";
+  const sign = value > 0 ? "+" : "";
+  return `${sign}${value.toFixed(2)}%`;
+}
+
 function renderRows() {
   const body = $("legsBody");
   body.innerHTML = "";
+  const equity = Math.max(toNumber(state.equity), 0);
+  const totalAllocation = allocationTotal();
+  const basePrice = state.legs.find((leg) => toNumber(leg.price) > 0)?.price || 0;
 
   state.legs.forEach((leg, index) => {
+    const allocation = Math.max(toNumber(leg.allocation), 0);
+    const allocationPercent = totalAllocation > 0 ? (allocation / totalAllocation) * 100 : 0;
+    const margin = equity * (allocationPercent / 100);
+    const change = priceChange(toNumber(leg.price), toNumber(basePrice));
     const row = document.createElement("tr");
     row.innerHTML = `
       <td class="row-index">#${index + 1}</td>
       <td><input class="leg-input" type="number" min="0" step="0.0001" inputmode="decimal" value="${leg.price}" data-index="${index}" data-key="price" aria-label="第 ${index + 1} 笔成交价"></td>
-      <td><input class="leg-input" type="number" min="0" step="0.01" inputmode="decimal" value="${leg.margin}" data-index="${index}" data-key="margin" aria-label="第 ${index + 1} 笔追加保证金"></td>
+      <td class="readonly-cell ${change >= 0 ? "positive" : "negative"}" data-change="${index}">${formatPercent(change)}</td>
+      <td><input class="leg-input" type="number" min="0" step="1" inputmode="decimal" value="${leg.allocation ?? 0}" data-index="${index}" data-key="allocation" aria-label="第 ${index + 1} 笔投入权重"></td>
+      <td class="readonly-cell" data-margin="${index}">${formatMoney(margin)}</td>
       <td><input class="leg-input" type="number" min="1" step="1" inputmode="numeric" value="${leg.leverage ?? state.leverage}" data-index="${index}" data-key="leverage" aria-label="第 ${index + 1} 笔杠杆倍数"></td>
-      <td><input class="note-input" type="text" value="${escapeHtml(leg.note || "")}" data-index="${index}" data-key="note" aria-label="第 ${index + 1} 笔备注"></td>
       <td><button class="delete-button" type="button" data-delete="${index}" title="删除第 ${index + 1} 笔" aria-label="删除第 ${index + 1} 笔">×</button></td>
     `;
     body.appendChild(row);
@@ -230,7 +258,10 @@ function renderRisk(result) {
   const badge = $("riskBadge");
   const usage = result.capitalUsage;
   badge.className = "risk-badge";
-  if (result.availableCash < 0 || usage > 0.85) {
+  if (usage >= 0.99) {
+    badge.textContent = "满仓";
+    badge.classList.add("warn");
+  } else if (result.availableCash < 0 || usage > 0.85) {
     badge.textContent = "高风险";
     badge.classList.add("danger");
   } else if (usage > 0.65) {
@@ -365,23 +396,44 @@ function updateLeg(event) {
   const index = Number(target.dataset.index);
   const key = target.dataset.key;
   if (!Number.isInteger(index) || !key) return;
-  state.legs[index][key] = key === "note" ? target.value : toNumber(target.value);
+  state.legs[index][key] = toNumber(target.value);
+  refreshComputedRows();
   renderResults();
+}
+
+function refreshComputedRows() {
+  const equity = Math.max(toNumber(state.equity), 0);
+  const totalAllocation = allocationTotal();
+  const basePrice = state.legs.find((leg) => toNumber(leg.price) > 0)?.price || 0;
+
+  state.legs.forEach((leg, index) => {
+    const allocation = Math.max(toNumber(leg.allocation), 0);
+    const allocationPercent = totalAllocation > 0 && toNumber(leg.price) > 0 ? (allocation / totalAllocation) * 100 : 0;
+    const margin = equity * (allocationPercent / 100);
+    const changeCell = document.querySelector(`[data-change="${index}"]`);
+    const marginCell = document.querySelector(`[data-margin="${index}"]`);
+    const change = priceChange(toNumber(leg.price), toNumber(basePrice));
+
+    if (changeCell) {
+      changeCell.textContent = formatPercent(change);
+      changeCell.classList.toggle("positive", change >= 0);
+      changeCell.classList.toggle("negative", change < 0);
+    }
+    if (marginCell) marginCell.textContent = formatMoney(margin);
+  });
 }
 
 function addLeg() {
   const last = state.legs.at(-1) || {
     price: toNumber(state.targetPrice) || 0.1,
-    margin: 50,
+    allocation: 10,
     leverage: toNumber(state.leverage, 25),
-    note: "",
   };
   const priceMultiplier = state.direction === "long" ? 1.08 : 0.92;
   state.legs.push({
     price: roundPrice(last.price * priceMultiplier),
-    margin: last.margin,
+    allocation: last.allocation || 10,
     leverage: Math.max(toNumber(last.leverage, state.leverage) - 5, 1),
-    note: "新增降杠杆档",
   });
   render();
 }
@@ -395,7 +447,7 @@ function deleteLeg(event) {
   const index = Number(event.target.dataset.delete);
   if (!Number.isInteger(index)) return;
   state.legs.splice(index, 1);
-  if (!state.legs.length) state.legs.push({ price: 0, margin: 0, note: "" });
+  if (!state.legs.length) state.legs.push({ price: 0, allocation: 100, leverage: state.leverage });
   render();
 }
 
@@ -411,6 +463,7 @@ async function exportResult() {
     "Position Rolling 计算结果",
     `方向：${state.direction === "long" ? "做多" : "做空"}`,
     `账户权益：${formatMoney(state.equity)} USDT`,
+    `投入方式：按权重分配，保证金合计 100% 投入`,
     `加权平均杠杆：${result.averageLeverage.toFixed(2)}x`,
     `总名义价值：${formatMoney(result.totalNotional)} USDT`,
     `总数量：${formatQuantity(result.totalQuantity)}`,
@@ -424,7 +477,7 @@ async function exportResult() {
     "滚仓档位：",
     ...result.enriched.map(
       (leg, index) =>
-        `#${index + 1} ${formatPrice(leg.price)} / 保证金 ${formatMoney(leg.margin)} / ${leg.leverage}x / ${leg.note}`,
+        `#${index + 1} ${formatPrice(leg.price)} / 涨幅 ${formatPercent(leg.changePercent)} / 权重 ${leg.allocation} / 保证金 ${formatMoney(leg.margin)} / ${leg.leverage}x`,
     ),
   ];
 

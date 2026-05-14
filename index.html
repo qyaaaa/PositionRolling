@@ -45,16 +45,12 @@
             <input id="feeRate" type="number" min="0" step="0.001" inputmode="decimal" />
           </label>
           <label class="field">
-            <span>预留资金 %</span>
-            <input id="reserveRate" type="number" min="0" max="100" step="0.1" inputmode="decimal" />
-          </label>
-          <label class="field">
             <span>目标价</span>
-            <input id="targetPrice" type="number" min="0" step="0.01" inputmode="decimal" />
+            <input id="targetPrice" type="number" min="0" step="0.0001" inputmode="decimal" />
           </label>
           <label class="field">
             <span>止损价</span>
-            <input id="stopPrice" type="number" min="0" step="0.01" inputmode="decimal" />
+            <input id="stopPrice" type="number" min="0" step="0.0001" inputmode="decimal" />
           </label>
         </section>
 
@@ -72,9 +68,10 @@
                 <tr>
                   <th>批次</th>
                   <th>触发/成交价</th>
-                  <th>追加保证金</th>
+                  <th>涨幅</th>
+                  <th>投入权重</th>
+                  <th>保证金</th>
                   <th>本档杠杆</th>
-                  <th>备注</th>
                   <th aria-label="删除"></th>
                 </tr>
               </thead>
