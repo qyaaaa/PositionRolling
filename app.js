@@ -1,20 +1,27 @@
 const defaultState = {
-  schemaVersion: 4,
+  schemaVersion: 8,
   direction: "long",
-  equity: 1000,
+  equity: 100,
   leverage: 25,
   maintenanceRate: 0.5,
   feeRate: 0.04,
   targetPrice: 0.145,
   stopPrice: 0.088,
   legs: [
-    { price: 0.1, allocation: 10, leverage: 25 },
-    { price: 0.108, allocation: 15, leverage: 20 },
-    { price: 0.116, allocation: 20, leverage: 15 },
-    { price: 0.124, allocation: 25, leverage: 10 },
-    { price: 0.132, allocation: 30, leverage: 5 },
+    { price: 0.1, leverage: 25 },
+    { price: 0.104, leverage: 25 },
+    { price: 0.108, leverage: 20 },
+    { price: 0.112, leverage: 20 },
+    { price: 0.116, leverage: 15 },
+    { price: 0.12, leverage: 10 },
+    { price: 0.124, leverage: 5 },
+    { price: 0.128, leverage: 5 },
+    { price: 0.132, leverage: 3 },
+    { price: 0.136, leverage: 3 },
   ],
 };
+
+const defaultLeverageSteps = [25, 25, 20, 20, 15, 10, 5, 5, 3, 3];
 
 const fields = [
   "direction",
@@ -55,7 +62,6 @@ function normalizeState(value) {
     ...value,
     legs: (value.legs || defaultState.legs).map((leg) => ({
       price: toNumber(leg.price),
-      allocation: Math.max(toNumber(leg.allocation, 0), 0),
       leverage: Math.max(toNumber(leg.leverage, value.leverage || defaultState.leverage), 1),
     })),
   };
@@ -74,81 +80,120 @@ function pct(value) {
   return toNumber(value) / 100;
 }
 
-function allocationTotal(legs = state.legs) {
-  return legs.reduce((sum, leg) => {
-    if (toNumber(leg.price) <= 0) return sum;
-    return sum + Math.max(toNumber(leg.allocation), 0);
-  }, 0);
-}
-
 function priceChange(price, basePrice) {
   if (!price || !basePrice) return 0;
   return ((price - basePrice) / basePrice) * 100;
 }
 
-function signedPnl(price, avgEntry, quantity, direction) {
+function signedCoinPnl(price, avgEntry, quantity, direction) {
   if (!price || !avgEntry || !quantity) return 0;
   return direction === "long"
-    ? (price - avgEntry) * quantity
-    : (avgEntry - price) * quantity;
+    ? (quantity * (price - avgEntry)) / price
+    : (quantity * (avgEntry - price)) / price;
+}
+
+function feeInCoin(notionalUsd, price, feeRate) {
+  if (!notionalUsd || !price) return 0;
+  return (notionalUsd * feeRate) / price;
+}
+
+function liquidationPriceForCoinMargin(entryPrice, leverage, maintenanceRate, direction) {
+  if (!entryPrice || !leverage) return 0;
+  if (direction === "long") {
+    return (entryPrice * leverage * (1 + maintenanceRate)) / (1 + leverage);
+  }
+  if (leverage <= 1) return 0;
+  return (entryPrice * leverage * (1 - maintenanceRate)) / (leverage - 1);
+}
+
+function solveBreakEvenPrice(entryPrice, quantity, realizedPnl, notionalUsd, feeRate, direction) {
+  if (!entryPrice || !quantity || !notionalUsd) return 0;
+  let low = entryPrice * 0.01;
+  let high = entryPrice * 4;
+
+  for (let i = 0; i < 80; i += 1) {
+    const mid = (low + high) / 2;
+    const pnl = realizedPnl + signedCoinPnl(mid, entryPrice, quantity, direction) - feeInCoin(notionalUsd, mid, feeRate);
+    if (direction === "long") {
+      if (pnl >= 0) high = mid;
+      else low = mid;
+    } else if (pnl >= 0) {
+      low = mid;
+    } else {
+      high = mid;
+    }
+  }
+
+  return (low + high) / 2;
 }
 
 function calculate() {
-  const equity = Math.max(toNumber(state.equity), 0);
+  const equityUsd = Math.max(toNumber(state.equity), 0);
   const feeRate = pct(state.feeRate);
   const maintenanceRate = pct(state.maintenanceRate);
-  const totalAllocation = allocationTotal();
   const validLegs = state.legs
     .map((leg) => ({
       price: Math.max(toNumber(leg.price), 0),
-      allocation: Math.max(toNumber(leg.allocation), 0),
       leverage: Math.max(toNumber(leg.leverage, state.leverage), 1),
     }))
-    .filter((leg) => leg.price > 0 && leg.allocation > 0 && totalAllocation > 0);
+    .filter((leg) => leg.price > 0);
   const basePrice = validLegs[0]?.price || 0;
+  const initialCoinEquity = basePrice > 0 ? equityUsd / basePrice : 0;
+  let rollingEquity = initialCoinEquity;
+  let previousPosition = null;
+  let realizedPnl = 0;
+  let realizedFees = 0;
+  let totalOpenFees = 0;
 
   const enriched = validLegs.map((leg) => {
-    const allocationPercent = (leg.allocation / totalAllocation) * 100;
-    const margin = equity * (allocationPercent / 100);
-    const notional = margin * leg.leverage;
-    return {
+    const transitionPnl = previousPosition
+      ? signedCoinPnl(leg.price, previousPosition.price, previousPosition.quantity, state.direction)
+      : 0;
+    const transitionFee = previousPosition ? feeInCoin(previousPosition.notional, leg.price, feeRate) : 0;
+
+    realizedPnl += transitionPnl - transitionFee;
+    realizedFees += transitionFee;
+    rollingEquity = Math.max(rollingEquity + transitionPnl - transitionFee, 0);
+
+    const margin = rollingEquity;
+    const quantity = margin * leg.leverage;
+    const notional = quantity * leg.price;
+    const row = {
       ...leg,
-      allocationPercent,
       changePercent: priceChange(leg.price, basePrice),
+      transitionPnl,
+      transitionFee,
       margin,
       notional,
-      quantity: notional / leg.price,
+      quantity,
+      liquidationPrice: liquidationPriceForCoinMargin(leg.price, leg.leverage, maintenanceRate, state.direction),
     };
+
+    totalOpenFees += feeInCoin(notional, leg.price, feeRate);
+    previousPosition = row;
+    return row;
   });
 
-  const totalNotional = enriched.reduce((sum, leg) => sum + leg.notional, 0);
-  const totalQuantity = enriched.reduce((sum, leg) => sum + leg.quantity, 0);
-  const marginUsed = enriched.reduce((sum, leg) => sum + leg.margin, 0);
-  const avgEntry = totalQuantity > 0 ? totalNotional / totalQuantity : 0;
-  const averageLeverage = marginUsed > 0 ? totalNotional / marginUsed : 0;
-  const openFee = totalNotional * feeRate;
-  const closeFee = totalNotional * feeRate;
-  const estimatedFees = openFee + closeFee;
+  const currentPosition = enriched.at(-1) || null;
+  const totalNotional = currentPosition?.notional || 0;
+  const totalQuantity = currentPosition?.quantity || 0;
+  const marginUsed = currentPosition?.margin || 0;
+  const avgEntry = currentPosition?.price || 0;
+  const averageLeverage = currentPosition?.leverage || 0;
+  const openFee = currentPosition ? feeInCoin(currentPosition.notional, currentPosition.price, feeRate) : 0;
+  const closeFee = currentPosition ? feeInCoin(currentPosition.notional, currentPosition.price, feeRate) : 0;
+  const estimatedFees = totalOpenFees + realizedFees + closeFee;
   const usedWithFees = marginUsed + openFee;
-  const availableCash = Math.max(equity - marginUsed, 0);
-  const capitalUsage = equity > 0 ? marginUsed / equity : 0;
-  const maintenanceMargin = totalNotional * maintenanceRate;
-  const liquidationMove = totalQuantity > 0 ? Math.max(marginUsed - maintenanceMargin, 0) / totalQuantity : 0;
-  const liquidationPrice =
-    totalQuantity > 0
-      ? state.direction === "long"
-        ? Math.max(avgEntry - liquidationMove, 0)
-        : avgEntry + liquidationMove
-      : 0;
-  const breakEvenMove = totalQuantity > 0 ? estimatedFees / totalQuantity : 0;
-  const breakEvenPrice =
-    totalQuantity > 0
-      ? state.direction === "long"
-        ? avgEntry + breakEvenMove
-        : Math.max(avgEntry - breakEvenMove, 0)
-      : 0;
-  const targetPnl = signedPnl(toNumber(state.targetPrice), avgEntry, totalQuantity, state.direction) - closeFee;
-  const stopPnl = signedPnl(toNumber(state.stopPrice), avgEntry, totalQuantity, state.direction) - closeFee;
+  const availableCash = currentPosition ? 0 : initialCoinEquity;
+  const capitalUsage = marginUsed > 0 ? 1 : 0;
+  const liquidationPrice = liquidationPriceForCoinMargin(avgEntry, averageLeverage, maintenanceRate, state.direction);
+  const breakEvenPrice = solveBreakEvenPrice(avgEntry, totalQuantity, realizedPnl, totalNotional, feeRate, state.direction);
+  const targetCloseFee = feeInCoin(totalNotional, toNumber(state.targetPrice), feeRate);
+  const stopCloseFee = feeInCoin(totalNotional, toNumber(state.stopPrice), feeRate);
+  const targetPnl =
+    realizedPnl + signedCoinPnl(toNumber(state.targetPrice), avgEntry, totalQuantity, state.direction) - targetCloseFee;
+  const stopPnl =
+    realizedPnl + signedCoinPnl(toNumber(state.stopPrice), avgEntry, totalQuantity, state.direction) - stopCloseFee;
 
   return {
     enriched,
@@ -163,7 +208,10 @@ function calculate() {
     usedWithFees,
     availableCash,
     capitalUsage,
-    totalAllocation,
+    realizedPnl,
+    rollingEquity,
+    initialCoinEquity,
+    equityUsd,
     liquidationPrice,
     breakEvenPrice,
     targetPnl,
@@ -174,6 +222,14 @@ function calculate() {
 function formatMoney(value) {
   if (!Number.isFinite(value) || value === 0) return value === 0 ? "0.00" : "-";
   return money.format(value);
+}
+
+function formatCoin(value) {
+  if (!Number.isFinite(value) || value === 0) return value === 0 ? "0.0000" : "-";
+  return new Intl.NumberFormat("zh-CN", {
+    minimumFractionDigits: 4,
+    maximumFractionDigits: 6,
+  }).format(value);
 }
 
 function formatPrice(value) {
@@ -190,6 +246,11 @@ function formatQuantity(value) {
   return compact.format(value);
 }
 
+function coinToUsd(coinAmount, price) {
+  if (!Number.isFinite(coinAmount) || !Number.isFinite(price)) return 0;
+  return coinAmount * price;
+}
+
 function formatPercent(value) {
   if (!Number.isFinite(value)) return "-";
   const sign = value > 0 ? "+" : "";
@@ -199,23 +260,22 @@ function formatPercent(value) {
 function renderRows() {
   const body = $("legsBody");
   body.innerHTML = "";
-  const equity = Math.max(toNumber(state.equity), 0);
-  const totalAllocation = allocationTotal();
+  const result = calculate();
   const basePrice = state.legs.find((leg) => toNumber(leg.price) > 0)?.price || 0;
 
   state.legs.forEach((leg, index) => {
-    const allocation = Math.max(toNumber(leg.allocation), 0);
-    const allocationPercent = totalAllocation > 0 ? (allocation / totalAllocation) * 100 : 0;
-    const margin = equity * (allocationPercent / 100);
+    const computed = result.enriched[index];
     const change = priceChange(toNumber(leg.price), toNumber(basePrice));
     const row = document.createElement("tr");
     row.innerHTML = `
       <td class="row-index">#${index + 1}</td>
       <td><input class="leg-input" type="number" min="0" step="0.0001" inputmode="decimal" value="${leg.price}" data-index="${index}" data-key="price" aria-label="第 ${index + 1} 笔成交价"></td>
       <td class="readonly-cell ${change >= 0 ? "positive" : "negative"}" data-change="${index}">${formatPercent(change)}</td>
-      <td><input class="leg-input" type="number" min="0" step="1" inputmode="decimal" value="${leg.allocation ?? 0}" data-index="${index}" data-key="allocation" aria-label="第 ${index + 1} 笔投入权重"></td>
-      <td class="readonly-cell" data-margin="${index}">${formatMoney(margin)}</td>
+      <td class="readonly-cell ${computed?.transitionPnl >= 0 ? "positive" : "negative"}" data-profit="${index}">${formatCoin(computed?.transitionPnl || 0)}</td>
+      <td class="readonly-cell" data-margin="${index}">${formatCoin(computed?.margin || 0)}</td>
+      <td class="readonly-cell" data-margin-usdt="${index}">${formatMoney(coinToUsd(computed?.margin || 0, computed?.price || toNumber(leg.price)))}</td>
       <td><input class="leg-input" type="number" min="1" step="1" inputmode="numeric" value="${leg.leverage ?? state.leverage}" data-index="${index}" data-key="leverage" aria-label="第 ${index + 1} 笔杠杆倍数"></td>
+      <td class="readonly-cell" data-liquidation="${index}">${formatPrice(computed?.liquidationPrice || 0)}</td>
       <td><button class="delete-button" type="button" data-delete="${index}" title="删除第 ${index + 1} 笔" aria-label="删除第 ${index + 1} 笔">×</button></td>
     `;
     body.appendChild(row);
@@ -235,12 +295,12 @@ function renderMetrics(result) {
   $("totalQuantity").textContent = formatQuantity(result.totalQuantity);
   $("avgEntry").textContent = formatPrice(result.avgEntry);
   $("averageLeverage").textContent = result.averageLeverage > 0 ? `${result.averageLeverage.toFixed(2)}x` : "-";
-  $("marginUsed").textContent = formatMoney(result.marginUsed);
+  $("marginUsed").textContent = formatMoney(coinToUsd(result.marginUsed, result.avgEntry));
   $("capitalUsage").textContent = `${(result.capitalUsage * 100).toFixed(2)}%`;
-  $("availableCash").textContent = formatMoney(result.availableCash);
+  $("availableCash").textContent = formatMoney(coinToUsd(result.availableCash, result.avgEntry || toNumber(state.targetPrice)));
   $("liquidationPrice").textContent = formatPrice(result.liquidationPrice);
   $("breakEvenPrice").textContent = formatPrice(result.breakEvenPrice);
-  $("estimatedFees").textContent = formatMoney(result.estimatedFees);
+  $("estimatedFees").textContent = formatCoin(result.estimatedFees);
   setPnl("targetPnl", result.targetPnl, result.marginUsed);
   setPnl("stopPnl", result.stopPnl, result.marginUsed);
   renderRisk(result);
@@ -249,7 +309,7 @@ function renderMetrics(result) {
 function setPnl(id, pnl, marginUsed) {
   const el = $(id);
   const roe = marginUsed > 0 ? (pnl / marginUsed) * 100 : 0;
-  el.textContent = `${formatMoney(pnl)} (${roe.toFixed(2)}%)`;
+  el.textContent = `${formatCoin(pnl)} (${roe.toFixed(2)}%)`;
   el.classList.toggle("positive", pnl >= 0);
   el.classList.toggle("negative", pnl < 0);
 }
@@ -278,7 +338,7 @@ function renderChart(result) {
   const dpr = window.devicePixelRatio || 1;
   const rect = canvas.getBoundingClientRect();
   canvas.width = Math.max(rect.width * dpr, 320);
-  canvas.height = 260 * dpr;
+  canvas.height = 300 * dpr;
   ctx.scale(dpr, dpr);
 
   const width = canvas.width / dpr;
@@ -298,21 +358,36 @@ function renderChart(result) {
     return;
   }
 
-  const min = Math.min(...prices);
-  const max = Math.max(...prices);
+  const legPrices = result.enriched.map((leg) => leg.price).filter((price) => Number.isFinite(price) && price > 0);
+  const scalePrices = legPrices.length ? legPrices : prices;
+  const min = Math.min(...scalePrices);
+  const max = Math.max(...scalePrices);
   const padding = Math.max((max - min) * 0.12, max * 0.015);
   const low = Math.max(min - padding, 0);
   const high = max + padding;
-  const x = (price) => 44 + ((price - low) / Math.max(high - low, 1)) * (width - 88);
+  const chart = {
+    left: width < 620 ? 38 : 54,
+    right: width < 620 ? 38 : 54,
+    top: 42,
+    axisY: Math.round(height * 0.58),
+    bottom: height - 54,
+  };
+  const range = high - low || 1;
+  const x = (price) =>
+    chart.left + Math.min(Math.max((price - low) / range, 0), 1) * (width - chart.left - chart.right);
 
-  drawAxis(ctx, width, height, low, high);
+  drawAxis(ctx, width, height, low, high, chart);
+  drawLadderPath(ctx, result.enriched, x, chart);
+  drawPriceLines(ctx, result, x, chart, height);
   result.enriched.forEach((leg, index) => {
-    drawMarker(ctx, x(leg.price), 98 + (index % 2) * 42, "#f4f7fb", `#${index + 1}`, leg.price);
+    drawMarker(ctx, x(leg.price), chart.axisY, "#f4f7fb", `#${index + 1}`, leg.price, {
+      flip: index % 2 === 1,
+      leverage: leg.leverage,
+      changePercent: leg.changePercent,
+      showPrice: width >= 760 || index % 2 === 0,
+      showChange: width >= 620,
+    });
   });
-  if (result.avgEntry > 0) drawLineMarker(ctx, x(result.avgEntry), height, "#35d0aa", "均价");
-  if (result.liquidationPrice > 0) drawLineMarker(ctx, x(result.liquidationPrice), height, "#ff6b74", "强平");
-  if (toNumber(state.targetPrice) > 0) drawLineMarker(ctx, x(toNumber(state.targetPrice)), height, "#74a7ff", "目标");
-  if (toNumber(state.stopPrice) > 0) drawLineMarker(ctx, x(toNumber(state.stopPrice)), height, "#f2b84b", "止损");
 }
 
 function drawEmptyChart(ctx, width, height) {
@@ -322,50 +397,130 @@ function drawEmptyChart(ctx, width, height) {
   ctx.fillText("添加滚仓批次后显示价格阶梯", width / 2, height / 2);
 }
 
-function drawAxis(ctx, width, height, low, high) {
-  const y = height - 56;
+function drawAxis(ctx, width, height, low, high, chart) {
+  const { left, right, axisY, bottom } = chart;
   ctx.strokeStyle = "#263241";
   ctx.lineWidth = 1;
+
+  for (let i = 0; i <= 4; i += 1) {
+    const x = left + ((width - left - right) / 4) * i;
+    ctx.beginPath();
+    ctx.moveTo(x, axisY - 74);
+    ctx.lineTo(x, bottom);
+    ctx.stroke();
+  }
+
+  ctx.strokeStyle = "rgba(244, 247, 251, 0.22)";
+  ctx.lineWidth = 2;
   ctx.beginPath();
-  ctx.moveTo(36, y);
-  ctx.lineTo(width - 36, y);
+  ctx.moveTo(left, axisY);
+  ctx.lineTo(width - right, axisY);
   ctx.stroke();
 
   ctx.fillStyle = "#8b9aae";
   ctx.font = "700 12px system-ui";
   ctx.textAlign = "left";
-  ctx.fillText(formatPrice(low), 36, y + 28);
+  ctx.fillText(formatPrice(low), left, bottom + 26);
   ctx.textAlign = "right";
-  ctx.fillText(formatPrice(high), width - 36, y + 28);
+  ctx.fillText(formatPrice(high), width - right, bottom + 26);
+
+  ctx.fillStyle = "#f4f7fb";
+  ctx.font = "900 13px system-ui";
+  ctx.textAlign = "center";
+  ctx.fillText("价格升高 → 杠杆降低", width / 2, 20);
 }
 
-function drawMarker(ctx, x, y, color, label, price) {
+function drawLadderPath(ctx, legs, xForPrice, chart) {
+  if (!legs.length) return;
+  const points = legs.map((leg) => ({
+    x: xForPrice(leg.price),
+    y: chart.axisY,
+  }));
+
+  ctx.strokeStyle = "rgba(53, 208, 170, 0.5)";
+  ctx.lineWidth = 4;
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  points.forEach((point, index) => {
+    if (index === 0) ctx.moveTo(point.x, point.y);
+    else ctx.lineTo(point.x, point.y);
+  });
+  ctx.stroke();
+  ctx.lineCap = "butt";
+}
+
+function drawMarker(ctx, x, y, color, label, price, options = {}) {
+  const { showPrice = true, showChange = true, flip = false, leverage, changePercent } = options;
+  const changeY = flip ? y + 84 : y - 74;
+  const leverageY = flip ? y + 66 : y - 56;
+  const labelY = flip ? y + 48 : y - 38;
+  const priceY = flip ? y + 30 : y - 20;
+
+  ctx.strokeStyle = "rgba(53, 208, 170, 0.35)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(x, flip ? y + 10 : y - 10);
+  ctx.lineTo(x, flip ? y + 30 : y - 24);
+  ctx.stroke();
+
+  ctx.strokeStyle = "rgba(5, 7, 10, 0.9)";
+  ctx.lineWidth = 3;
   ctx.fillStyle = color;
   ctx.beginPath();
-  ctx.arc(x, y, 7, 0, Math.PI * 2);
+  ctx.arc(x, y, 8.5, 0, Math.PI * 2);
+  ctx.stroke();
   ctx.fill();
+
   ctx.fillStyle = "#f4f7fb";
   ctx.font = "800 12px system-ui";
   ctx.textAlign = "center";
-  ctx.fillText(label, x, y - 14);
-  ctx.fillStyle = "#8b9aae";
-  ctx.font = "700 11px system-ui";
-  ctx.fillText(formatPrice(price), x, y + 24);
+  ctx.fillText(label, x, labelY);
+  if (leverage) {
+    ctx.fillStyle = "#35d0aa";
+    ctx.font = "900 12px system-ui";
+    ctx.fillText(`${leverage}x`, x, leverageY);
+  }
+  if (showPrice) {
+    ctx.fillStyle = "#8b9aae";
+    ctx.font = "750 11px system-ui";
+    ctx.fillText(formatPrice(price), x, priceY);
+  }
+  if (showChange) {
+    ctx.fillStyle = "#72f0cf";
+    ctx.font = "800 10px system-ui";
+    ctx.fillText(formatPercent(changePercent), x, changeY);
+  }
 }
 
-function drawLineMarker(ctx, x, height, color, label) {
-  const top = 28;
-  const bottom = height - 56;
+function drawPriceLines(ctx, result, xForPrice, chart, height) {
+  const markers = [
+    { price: result.liquidationPrice, color: "#ff6b74", label: "强平", lane: 0 },
+    { price: result.avgEntry, color: "#35d0aa", label: "当前", lane: 1 },
+    { price: toNumber(state.targetPrice), color: "#74a7ff", label: "目标", lane: 2 },
+    { price: toNumber(state.stopPrice), color: "#f2b84b", label: "止损", lane: 3 },
+  ];
+
+  markers
+    .filter((marker) => Number.isFinite(marker.price) && marker.price > 0)
+    .forEach((marker) => drawLineMarker(ctx, xForPrice(marker.price), chart, height, marker.color, marker.label, marker.lane));
+}
+
+function drawLineMarker(ctx, x, chart, height, color, label, lane = 0) {
+  const top = 36 + lane * 16;
+  const bottom = chart.bottom;
   ctx.strokeStyle = color;
-  ctx.lineWidth = 2;
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([5, 5]);
   ctx.beginPath();
   ctx.moveTo(x, top);
   ctx.lineTo(x, bottom);
   ctx.stroke();
+  ctx.setLineDash([]);
+
   ctx.fillStyle = color;
   ctx.font = "900 12px system-ui";
   ctx.textAlign = "center";
-  ctx.fillText(label, x, top - 8);
+  ctx.fillText(label, x, Math.max(20, top - 7));
 }
 
 function renderResults() {
@@ -402,16 +557,16 @@ function updateLeg(event) {
 }
 
 function refreshComputedRows() {
-  const equity = Math.max(toNumber(state.equity), 0);
-  const totalAllocation = allocationTotal();
+  const result = calculate();
   const basePrice = state.legs.find((leg) => toNumber(leg.price) > 0)?.price || 0;
 
   state.legs.forEach((leg, index) => {
-    const allocation = Math.max(toNumber(leg.allocation), 0);
-    const allocationPercent = totalAllocation > 0 && toNumber(leg.price) > 0 ? (allocation / totalAllocation) * 100 : 0;
-    const margin = equity * (allocationPercent / 100);
     const changeCell = document.querySelector(`[data-change="${index}"]`);
+    const profitCell = document.querySelector(`[data-profit="${index}"]`);
     const marginCell = document.querySelector(`[data-margin="${index}"]`);
+    const marginUsdtCell = document.querySelector(`[data-margin-usdt="${index}"]`);
+    const liquidationCell = document.querySelector(`[data-liquidation="${index}"]`);
+    const computed = result.enriched[index];
     const change = priceChange(toNumber(leg.price), toNumber(basePrice));
 
     if (changeCell) {
@@ -419,21 +574,29 @@ function refreshComputedRows() {
       changeCell.classList.toggle("positive", change >= 0);
       changeCell.classList.toggle("negative", change < 0);
     }
-    if (marginCell) marginCell.textContent = formatMoney(margin);
+    if (profitCell) {
+      profitCell.textContent = formatCoin(computed?.transitionPnl || 0);
+      profitCell.classList.toggle("positive", (computed?.transitionPnl || 0) >= 0);
+      profitCell.classList.toggle("negative", (computed?.transitionPnl || 0) < 0);
+    }
+    if (marginCell) marginCell.textContent = formatCoin(computed?.margin || 0);
+    if (marginUsdtCell) {
+      marginUsdtCell.textContent = formatMoney(coinToUsd(computed?.margin || 0, computed?.price || toNumber(leg.price)));
+    }
+    if (liquidationCell) liquidationCell.textContent = formatPrice(computed?.liquidationPrice || 0);
   });
 }
 
 function addLeg() {
   const last = state.legs.at(-1) || {
     price: toNumber(state.targetPrice) || 0.1,
-    allocation: 10,
     leverage: toNumber(state.leverage, 25),
   };
-  const priceMultiplier = state.direction === "long" ? 1.08 : 0.92;
+  const priceMultiplier = state.direction === "long" ? 1.04 : 0.96;
+  const nextIndex = state.legs.length;
   state.legs.push({
     price: roundPrice(last.price * priceMultiplier),
-    allocation: last.allocation || 10,
-    leverage: Math.max(toNumber(last.leverage, state.leverage) - 5, 1),
+    leverage: defaultLeverageSteps[nextIndex] || Math.max(toNumber(last.leverage, state.leverage), 1),
   });
   render();
 }
@@ -447,7 +610,7 @@ function deleteLeg(event) {
   const index = Number(event.target.dataset.delete);
   if (!Number.isInteger(index)) return;
   state.legs.splice(index, 1);
-  if (!state.legs.length) state.legs.push({ price: 0, allocation: 100, leverage: state.leverage });
+  if (!state.legs.length) state.legs.push({ price: 0, leverage: state.leverage });
   render();
 }
 
@@ -463,21 +626,22 @@ async function exportResult() {
     "Position Rolling 计算结果",
     `方向：${state.direction === "long" ? "做多" : "做空"}`,
     `账户权益：${formatMoney(state.equity)} USDT`,
-    `投入方式：按权重分配，保证金合计 100% 投入`,
-    `加权平均杠杆：${result.averageLeverage.toFixed(2)}x`,
+    `初始币本位保证金：${formatCoin(result.initialCoinEquity)} DOGE`,
+    `投入方式：按首仓价把 USDT 本金换算为 DOGE 保证金，之后逐档全仓复投`,
+    `当前杠杆：${result.averageLeverage.toFixed(2)}x`,
     `总名义价值：${formatMoney(result.totalNotional)} USDT`,
-    `总数量：${formatQuantity(result.totalQuantity)}`,
+    `仓位数量：${formatQuantity(result.totalQuantity)} DOGE`,
     `持仓均价：${formatPrice(result.avgEntry)}`,
-    `已用保证金：${formatMoney(result.marginUsed)} USDT`,
-    `剩余可用：${formatMoney(result.availableCash)} USDT`,
+    `当前保证金：${formatMoney(coinToUsd(result.marginUsed, result.avgEntry))} USDT`,
+    `剩余可用：${formatMoney(coinToUsd(result.availableCash, result.avgEntry || toNumber(state.targetPrice)))} USDT`,
     `预估强平价：${formatPrice(result.liquidationPrice)}`,
     `盈亏平衡价：${formatPrice(result.breakEvenPrice)}`,
-    `目标价盈亏：${formatMoney(result.targetPnl)} USDT`,
-    `止损价盈亏：${formatMoney(result.stopPnl)} USDT`,
+    `目标价盈亏：${formatCoin(result.targetPnl)} DOGE`,
+    `止损价盈亏：${formatCoin(result.stopPnl)} DOGE`,
     "滚仓档位：",
     ...result.enriched.map(
       (leg, index) =>
-        `#${index + 1} ${formatPrice(leg.price)} / 涨幅 ${formatPercent(leg.changePercent)} / 权重 ${leg.allocation} / 保证金 ${formatMoney(leg.margin)} / ${leg.leverage}x`,
+        `#${index + 1} ${formatPrice(leg.price)} / 涨幅 ${formatPercent(leg.changePercent)} / 本次收益 ${formatCoin(leg.transitionPnl)} DOGE / 全仓投入币数 ${formatCoin(leg.margin)} DOGE / 折合 ${formatMoney(coinToUsd(leg.margin, leg.price))} USDT / ${leg.leverage}x / 强平 ${formatPrice(leg.liquidationPrice)}`,
     ),
   ];
 
