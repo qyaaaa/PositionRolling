@@ -298,7 +298,8 @@ tbody tr:last-child td {
 canvas {
   display: block;
   width: 100%;
-  max-height: 360px;
+  max-height: 400px;
+  cursor: crosshair;
 }
 
 .chart-legend {

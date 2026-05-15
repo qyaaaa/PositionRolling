@@ -34,6 +34,7 @@ const fields = [
 ];
 
 let state = loadState();
+let chartPointer = null;
 
 const $ = (id) => document.getElementById(id);
 const money = new Intl.NumberFormat("zh-CN", {
@@ -338,15 +339,21 @@ function renderChart(result) {
   const dpr = window.devicePixelRatio || 1;
   const rect = canvas.getBoundingClientRect();
   canvas.width = Math.max(rect.width * dpr, 320);
-  canvas.height = 300 * dpr;
+  canvas.height = 360 * dpr;
   ctx.scale(dpr, dpr);
 
   const width = canvas.width / dpr;
   const height = canvas.height / dpr;
   ctx.clearRect(0, 0, width, height);
 
+  if (!result.enriched.length) {
+    drawEmptyChart(ctx, width, height);
+    return;
+  }
+
+  const candles = buildRollingCandles(result.enriched);
   const prices = [
-    ...result.enriched.map((leg) => leg.price),
+    ...candles.flatMap((candle) => [candle.high, candle.low, candle.open, candle.close]),
     result.avgEntry,
     result.liquidationPrice,
     toNumber(state.targetPrice),
@@ -358,36 +365,35 @@ function renderChart(result) {
     return;
   }
 
-  const legPrices = result.enriched.map((leg) => leg.price).filter((price) => Number.isFinite(price) && price > 0);
-  const scalePrices = legPrices.length ? legPrices : prices;
-  const min = Math.min(...scalePrices);
-  const max = Math.max(...scalePrices);
-  const padding = Math.max((max - min) * 0.12, max * 0.015);
+  const min = Math.min(...prices);
+  const max = Math.max(...prices);
+  const padding = Math.max((max - min) * 0.08, max * 0.012);
   const low = Math.max(min - padding, 0);
   const high = max + padding;
   const chart = {
-    left: width < 620 ? 38 : 54,
-    right: width < 620 ? 38 : 54,
-    top: 42,
-    axisY: Math.round(height * 0.58),
-    bottom: height - 54,
+    left: 18,
+    right: width < 620 ? 62 : 78,
+    top: 30,
+    priceBottom: height - 38,
+    leverageLabelY: height - 52,
+    timeY: height - 12,
   };
   const range = high - low || 1;
-  const x = (price) =>
-    chart.left + Math.min(Math.max((price - low) / range, 0), 1) * (width - chart.left - chart.right);
+  const xForIndex = (index) =>
+    chart.left +
+    (result.enriched.length === 1 ? 0.5 : index / (result.enriched.length - 1)) * (width - chart.left - chart.right);
+  const yForPrice = (price) =>
+    chart.priceBottom - Math.min(Math.max((price - low) / range, 0), 1) * (chart.priceBottom - chart.top);
+  const hoverIndex = chartPointer ? getHoverIndex(chartPointer, candles.length, xForIndex, chart, width) : null;
 
-  drawAxis(ctx, width, height, low, high, chart);
-  drawLadderPath(ctx, result.enriched, x, chart);
-  drawPriceLines(ctx, result, x, chart, height);
-  result.enriched.forEach((leg, index) => {
-    drawMarker(ctx, x(leg.price), chart.axisY, "#f4f7fb", `#${index + 1}`, leg.price, {
-      flip: index % 2 === 1,
-      leverage: leg.leverage,
-      changePercent: leg.changePercent,
-      showPrice: width >= 760 || index % 2 === 0,
-      showChange: width >= 620,
-    });
-  });
+  drawTvBackground(ctx, width, height, chart);
+  drawTvGrid(ctx, width, chart, low, high, yForPrice, candles, xForIndex);
+  drawTvHeader(ctx, candles, hoverIndex);
+  drawTvRiskLines(ctx, result, yForPrice, chart, width);
+  drawTvCandles(ctx, candles, xForIndex, yForPrice, chart, width, hoverIndex);
+  drawTvLeverageLabels(ctx, candles, xForIndex, chart, hoverIndex);
+  drawTvTimeAxis(ctx, candles, xForIndex, chart);
+  drawTvCrosshair(ctx, chartPointer, hoverIndex, candles, xForIndex, yForPrice, chart, width, height);
 }
 
 function drawEmptyChart(ctx, width, height) {
@@ -397,130 +403,265 @@ function drawEmptyChart(ctx, width, height) {
   ctx.fillText("添加滚仓批次后显示价格阶梯", width / 2, height / 2);
 }
 
-function drawAxis(ctx, width, height, low, high, chart) {
-  const { left, right, axisY, bottom } = chart;
-  ctx.strokeStyle = "#263241";
-  ctx.lineWidth = 1;
+function buildRollingCandles(legs) {
+  return legs.map((leg, index) => {
+    const previousPrice =
+      legs[index - 1]?.price || leg.price * (state.direction === "long" ? 0.98 : 1.02);
+    const open = previousPrice;
+    const close = leg.price;
+    const body = Math.max(Math.abs(close - open), leg.price * 0.006);
+    const high = Math.max(open, close) + body * 0.48;
+    const low = Math.max(Math.min(open, close) - body * 0.48, leg.price * 0.01);
 
-  for (let i = 0; i <= 4; i += 1) {
-    const x = left + ((width - left - right) / 4) * i;
-    ctx.beginPath();
-    ctx.moveTo(x, axisY - 74);
-    ctx.lineTo(x, bottom);
-    ctx.stroke();
-  }
-
-  ctx.strokeStyle = "rgba(244, 247, 251, 0.22)";
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(left, axisY);
-  ctx.lineTo(width - right, axisY);
-  ctx.stroke();
-
-  ctx.fillStyle = "#8b9aae";
-  ctx.font = "700 12px system-ui";
-  ctx.textAlign = "left";
-  ctx.fillText(formatPrice(low), left, bottom + 26);
-  ctx.textAlign = "right";
-  ctx.fillText(formatPrice(high), width - right, bottom + 26);
-
-  ctx.fillStyle = "#f4f7fb";
-  ctx.font = "900 13px system-ui";
-  ctx.textAlign = "center";
-  ctx.fillText("价格升高 → 杠杆降低", width / 2, 20);
-}
-
-function drawLadderPath(ctx, legs, xForPrice, chart) {
-  if (!legs.length) return;
-  const points = legs.map((leg) => ({
-    x: xForPrice(leg.price),
-    y: chart.axisY,
-  }));
-
-  ctx.strokeStyle = "rgba(53, 208, 170, 0.5)";
-  ctx.lineWidth = 4;
-  ctx.lineCap = "round";
-  ctx.beginPath();
-  points.forEach((point, index) => {
-    if (index === 0) ctx.moveTo(point.x, point.y);
-    else ctx.lineTo(point.x, point.y);
+    return {
+      ...leg,
+      close,
+      high,
+      index,
+      low,
+      open,
+    };
   });
-  ctx.stroke();
-  ctx.lineCap = "butt";
 }
 
-function drawMarker(ctx, x, y, color, label, price, options = {}) {
-  const { showPrice = true, showChange = true, flip = false, leverage, changePercent } = options;
-  const changeY = flip ? y + 84 : y - 74;
-  const leverageY = flip ? y + 66 : y - 56;
-  const labelY = flip ? y + 48 : y - 38;
-  const priceY = flip ? y + 30 : y - 20;
+function drawTvBackground(ctx, width, height, chart) {
+  ctx.fillStyle = "#0d131b";
+  ctx.fillRect(0, 0, width, height);
 
-  ctx.strokeStyle = "rgba(53, 208, 170, 0.35)";
+  ctx.strokeStyle = "#1f2a36";
   ctx.lineWidth = 1;
   ctx.beginPath();
-  ctx.moveTo(x, flip ? y + 10 : y - 10);
-  ctx.lineTo(x, flip ? y + 30 : y - 24);
+  ctx.moveTo(width - chart.right, chart.top);
+  ctx.lineTo(width - chart.right, chart.priceBottom);
+  ctx.moveTo(chart.left, chart.priceBottom);
+  ctx.lineTo(width - chart.right, chart.priceBottom);
   ctx.stroke();
-
-  ctx.strokeStyle = "rgba(5, 7, 10, 0.9)";
-  ctx.lineWidth = 3;
-  ctx.fillStyle = color;
-  ctx.beginPath();
-  ctx.arc(x, y, 8.5, 0, Math.PI * 2);
-  ctx.stroke();
-  ctx.fill();
-
-  ctx.fillStyle = "#f4f7fb";
-  ctx.font = "800 12px system-ui";
-  ctx.textAlign = "center";
-  ctx.fillText(label, x, labelY);
-  if (leverage) {
-    ctx.fillStyle = "#35d0aa";
-    ctx.font = "900 12px system-ui";
-    ctx.fillText(`${leverage}x`, x, leverageY);
-  }
-  if (showPrice) {
-    ctx.fillStyle = "#8b9aae";
-    ctx.font = "750 11px system-ui";
-    ctx.fillText(formatPrice(price), x, priceY);
-  }
-  if (showChange) {
-    ctx.fillStyle = "#72f0cf";
-    ctx.font = "800 10px system-ui";
-    ctx.fillText(formatPercent(changePercent), x, changeY);
-  }
 }
 
-function drawPriceLines(ctx, result, xForPrice, chart, height) {
+function drawTvGrid(ctx, width, chart, low, high, yForPrice, candles, xForIndex) {
+  const priceTicks = 5;
+  ctx.strokeStyle = "rgba(139, 154, 174, 0.14)";
+  ctx.lineWidth = 1;
+  ctx.fillStyle = "#7d8b9d";
+  ctx.font = "700 11px system-ui";
+
+  for (let i = 0; i <= priceTicks; i += 1) {
+    const price = high - ((high - low) / priceTicks) * i;
+    const y = yForPrice(price);
+    ctx.beginPath();
+    ctx.moveTo(chart.left, y);
+    ctx.lineTo(width - chart.right, y);
+    ctx.stroke();
+
+    ctx.textAlign = "left";
+    ctx.fillText(formatPrice(price), width - chart.right + 8, y + 4);
+  }
+
+  const stride = Math.max(Math.ceil(candles.length / 6), 1);
+  candles.forEach((_, index) => {
+    if (index % stride !== 0 && index !== candles.length - 1) return;
+    const x = xForIndex(index);
+    ctx.beginPath();
+    ctx.moveTo(x, chart.top);
+    ctx.lineTo(x, chart.priceBottom);
+    ctx.stroke();
+  });
+}
+
+function drawTvHeader(ctx, candles, hoverIndex) {
+  const candle = candles[hoverIndex ?? candles.length - 1];
+  const up = candle.close >= candle.open;
+  const color = up ? "#26a69a" : "#ef5350";
+  const change = ((candle.close - candle.open) / candle.open) * 100;
+
+  ctx.fillStyle = "#d7dee8";
+  ctx.font = "900 13px system-ui";
+  ctx.textAlign = "left";
+  ctx.fillText("DOGEUSDT · Rolling Plan · 4% tier", 18, 19);
+
+  ctx.font = "800 11px system-ui";
+  ctx.fillStyle = "#8b9aae";
+  ctx.fillText(`O ${formatPrice(candle.open)}`, 18, 38);
+  ctx.fillText(`H ${formatPrice(candle.high)}`, 102, 38);
+  ctx.fillText(`L ${formatPrice(candle.low)}`, 186, 38);
+  ctx.fillStyle = color;
+  ctx.fillText(`C ${formatPrice(candle.close)}  ${formatPercent(change)}`, 270, 38);
+}
+
+function drawTvRiskLines(ctx, result, yForPrice, chart, width) {
   const markers = [
-    { price: result.liquidationPrice, color: "#ff6b74", label: "强平", lane: 0 },
-    { price: result.avgEntry, color: "#35d0aa", label: "当前", lane: 1 },
-    { price: toNumber(state.targetPrice), color: "#74a7ff", label: "目标", lane: 2 },
-    { price: toNumber(state.stopPrice), color: "#f2b84b", label: "止损", lane: 3 },
+    { price: toNumber(state.targetPrice), color: "#2962ff", label: "目标" },
+    { price: result.avgEntry, color: "#26a69a", label: "当前" },
+    { price: result.liquidationPrice, color: "#ef5350", label: "强平" },
+    { price: toNumber(state.stopPrice), color: "#f6b84b", label: "止损" },
   ];
 
   markers
     .filter((marker) => Number.isFinite(marker.price) && marker.price > 0)
-    .forEach((marker) => drawLineMarker(ctx, xForPrice(marker.price), chart, height, marker.color, marker.label, marker.lane));
+    .forEach((marker) => {
+      const y = yForPrice(marker.price);
+      ctx.strokeStyle = marker.color;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([6, 5]);
+      ctx.beginPath();
+      ctx.moveTo(chart.left, y);
+      ctx.lineTo(width - chart.right, y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      const text = `${marker.label} ${formatPrice(marker.price)}`;
+      ctx.font = "900 11px system-ui";
+      const labelWidth = ctx.measureText(text).width + 12;
+      ctx.fillStyle = marker.color;
+      roundRect(ctx, width - chart.right + 5, y - 10, labelWidth, 20, 4);
+      ctx.fill();
+      ctx.fillStyle = "#071016";
+      ctx.textAlign = "left";
+      ctx.fillText(text, width - chart.right + 11, y + 4);
+    });
 }
 
-function drawLineMarker(ctx, x, chart, height, color, label, lane = 0) {
-  const top = 36 + lane * 16;
-  const bottom = chart.bottom;
-  ctx.strokeStyle = color;
-  ctx.lineWidth = 1.5;
-  ctx.setLineDash([5, 5]);
+function drawTvCandles(ctx, candles, xForIndex, yForPrice, chart, width, hoverIndex) {
+  const stepWidth = candles.length > 1 ? (width - chart.left - chart.right) / (candles.length - 1) : 72;
+  const candleWidth = Math.max(Math.min(stepWidth * 0.58, 34), 10);
+
+  candles.forEach((candle, index) => {
+    const x = xForIndex(index);
+    const highY = yForPrice(candle.high);
+    const lowY = yForPrice(candle.low);
+    const openY = yForPrice(candle.open);
+    const closeY = yForPrice(candle.close);
+    const top = Math.min(openY, closeY);
+    const bodyHeight = Math.max(Math.abs(closeY - openY), 5);
+    const up = candle.close >= candle.open;
+    const color = up ? "#26a69a" : "#ef5350";
+
+    ctx.globalAlpha = hoverIndex === null || hoverIndex === index ? 1 : 0.56;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = hoverIndex === index ? 2.5 : 1.5;
+    ctx.beginPath();
+    ctx.moveTo(x, highY);
+    ctx.lineTo(x, lowY);
+    ctx.stroke();
+
+    ctx.fillStyle = up ? "rgba(38, 166, 154, 0.9)" : "rgba(239, 83, 80, 0.9)";
+    ctx.fillRect(x - candleWidth / 2, top, candleWidth, bodyHeight);
+    ctx.strokeRect(x - candleWidth / 2, top, candleWidth, bodyHeight);
+    ctx.globalAlpha = 1;
+  });
+}
+
+function drawTvLeverageLabels(ctx, candles, xForIndex, chart, hoverIndex) {
+  ctx.font = "900 11px system-ui";
+  ctx.textAlign = "center";
+  candles.forEach((candle, index) => {
+    const x = xForIndex(index);
+    const hot = candle.leverage >= 15;
+
+    ctx.globalAlpha = hoverIndex === null || hoverIndex === index ? 1 : 0.52;
+    ctx.fillStyle = hot ? "#f6b84b" : "#26a69a";
+    ctx.fillText(`${candle.leverage}x`, x, chart.leverageLabelY);
+  });
+  ctx.globalAlpha = 1;
+}
+
+function drawTvTimeAxis(ctx, candles, xForIndex, chart) {
+  const stride = Math.max(Math.ceil(candles.length / 6), 1);
+  ctx.fillStyle = "#7d8b9d";
+  ctx.font = "750 11px system-ui";
+  ctx.textAlign = "center";
+
+  candles.forEach((candle, index) => {
+    if (index % stride !== 0 && index !== candles.length - 1) return;
+    ctx.fillText(`#${index + 1}`, xForIndex(index), chart.timeY);
+  });
+}
+
+function drawTvCrosshair(ctx, pointer, hoverIndex, candles, xForIndex, yForPrice, chart, width, height) {
+  if (!pointer || hoverIndex === null) return;
+  const candle = candles[hoverIndex];
+  const x = xForIndex(hoverIndex);
+  const y = pointer.y;
+
+  ctx.strokeStyle = "rgba(215, 222, 232, 0.48)";
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 4]);
   ctx.beginPath();
-  ctx.moveTo(x, top);
-  ctx.lineTo(x, bottom);
+  ctx.moveTo(x, chart.top);
+  ctx.lineTo(x, chart.priceBottom);
+  ctx.moveTo(chart.left, y);
+  ctx.lineTo(width - chart.right, y);
   ctx.stroke();
   ctx.setLineDash([]);
 
-  ctx.fillStyle = color;
-  ctx.font = "900 12px system-ui";
-  ctx.textAlign = "center";
-  ctx.fillText(label, x, Math.max(20, top - 7));
+  const price = candle.close;
+  const priceText = formatPrice(price);
+  ctx.fillStyle = "#d7dee8";
+  roundRect(ctx, width - chart.right + 5, yForPrice(price) - 10, 58, 20, 4);
+  ctx.fill();
+  ctx.fillStyle = "#071016";
+  ctx.font = "900 11px system-ui";
+  ctx.textAlign = "left";
+  ctx.fillText(priceText, width - chart.right + 11, yForPrice(price) + 4);
+
+  const tooltip = [
+    `#${hoverIndex + 1}  ${candle.leverage}x`,
+    `O ${formatPrice(candle.open)}  H ${formatPrice(candle.high)}`,
+    `L ${formatPrice(candle.low)}  C ${formatPrice(candle.close)}`,
+    `涨幅 ${formatPercent(candle.changePercent)}`,
+  ];
+  const boxX = Math.min(Math.max(pointer.x + 14, chart.left), width - chart.right - 190);
+  const boxY = Math.min(Math.max(pointer.y + 14, chart.top), height - 118);
+
+  ctx.fillStyle = "rgba(13, 19, 27, 0.94)";
+  ctx.strokeStyle = "rgba(139, 154, 174, 0.28)";
+  roundRect(ctx, boxX, boxY, 176, 92, 6);
+  ctx.fill();
+  ctx.stroke();
+
+  tooltip.forEach((line, index) => {
+    ctx.fillStyle = index === 0 ? "#d7dee8" : "#8b9aae";
+    ctx.font = index === 0 ? "900 12px system-ui" : "750 11px system-ui";
+    ctx.textAlign = "left";
+    ctx.fillText(line, boxX + 10, boxY + 20 + index * 18);
+  });
+}
+
+function getHoverIndex(pointer, length, xForIndex, chart, width) {
+  if (
+    pointer.x < chart.left ||
+    pointer.x > width - chart.right ||
+    pointer.y < chart.top ||
+    pointer.y > chart.priceBottom
+  ) {
+    return null;
+  }
+
+  let closest = 0;
+  let distance = Infinity;
+  for (let i = 0; i < length; i += 1) {
+    const currentDistance = Math.abs(pointer.x - xForIndex(i));
+    if (currentDistance < distance) {
+      closest = i;
+      distance = currentDistance;
+    }
+  }
+  return closest;
+}
+
+function roundRect(ctx, x, y, width, height, radius) {
+  const r = Math.min(radius, width / 2, height / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + width - r, y);
+  ctx.quadraticCurveTo(x + width, y, x + width, y + r);
+  ctx.lineTo(x + width, y + height - r);
+  ctx.quadraticCurveTo(x + width, y + height, x + width - r, y + height);
+  ctx.lineTo(x + r, y + height);
+  ctx.quadraticCurveTo(x, y + height, x, y + height - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
 }
 
 function renderResults() {
@@ -671,6 +812,20 @@ function showToast(message) {
   showToast.timer = setTimeout(() => toast.classList.remove("show"), 2200);
 }
 
+function updateChartPointer(event) {
+  const rect = $("ladderChart").getBoundingClientRect();
+  chartPointer = {
+    x: event.clientX - rect.left,
+    y: event.clientY - rect.top,
+  };
+  renderChart(calculate());
+}
+
+function clearChartPointer() {
+  chartPointer = null;
+  renderChart(calculate());
+}
+
 fields.forEach((field) => {
   $(field).addEventListener("input", updateField);
   $(field).addEventListener("change", updateField);
@@ -680,6 +835,8 @@ $("legsBody").addEventListener("click", deleteLeg);
 $("addLegButton").addEventListener("click", addLeg);
 $("resetButton").addEventListener("click", reset);
 $("exportButton").addEventListener("click", exportResult);
+$("ladderChart").addEventListener("mousemove", updateChartPointer);
+$("ladderChart").addEventListener("mouseleave", clearChartPointer);
 window.addEventListener("resize", () => renderChart(calculate()));
 
 render();
