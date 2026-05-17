@@ -1,6 +1,6 @@
 # Position Rolling
 
-纯前端币本位滚仓计算器，面向合约/杠杆仓位的分批加仓方案测算。项目不依赖构建工具，直接打开 `index.html` 即可运行，也可以部署到 GitHub Pages。
+Vue 版纯前端币本位滚仓计算器，面向合约/杠杆仓位的分批加仓方案测算。项目使用 Vite 启动，也可以构建后部署到 GitHub Pages。
 
 ## V1.0 首版范围
 
@@ -9,6 +9,7 @@
 - 核心计算：当前 USDT 名义价值、仓位 DOGE 数量、当前入场价、当前杠杆、当前 DOGE 保证金、资金占用、剩余可用。
 - 风险测算：预估强平价、盈亏平衡价、目标价盈亏、止损价盈亏、双边费用估算。
 - 可视化：价格阶梯图展示开仓/加仓、均价、强平、目标与止损位置。
+- 交易知识：新增知识 Tab，先补充订单流交易基础。
 - 易用功能：DOGE 每 4% 一档的 10 档降杠杆示例、涨幅展示、示例数据重置、复制计算结果、本地自动保存。
 
 ## 版本方案
@@ -28,7 +29,32 @@
 ## 使用方式
 
 ```bash
-open index.html
+npm install
+npm start
 ```
 
-或者直接在浏览器中打开仓库里的 `index.html`。
+然后访问终端输出的本地地址，默认通常是 `http://localhost:5173`。
+
+常用命令：
+
+```bash
+npm run dev
+npm run build
+npm run preview
+```
+
+## 文件结构
+
+- `index.html`：Vite 入口，只挂载 Vue 应用。
+- `src/App.vue`：应用壳、顶部 Tab、全局状态、复制和重置逻辑。
+- `src/components/CalculatorPanel.vue`：滚仓计算 Tab，包括基础参数、K 线图和滚仓计划表。
+- `src/components/KnowledgePanel.vue`：交易知识 Tab，当前先放订单流交易内容。
+- `src/components/InspectorPanel.vue`：右侧仓位摘要、风险线和版本方案。
+- `src/components/ChartCanvas.vue`：TradingView 风格 K 线 canvas。
+- `src/utils/position.js`：滚仓、币本位盈亏、强平、格式化等计算函数。
+- `src/utils/chart.js`：canvas 图表绘制函数。
+- `styles.css`：夜间模式、计算器、知识面板和响应式样式。
+
+## 本地调试
+
+运行 `npm start` 后，Vite 会监听源码变化并自动刷新页面。新增知识主题时，优先扩展 `src/components/KnowledgePanel.vue`，需要新增计算能力时放到 `src/utils/position.js`。
