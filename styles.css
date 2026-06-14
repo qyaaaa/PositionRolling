@@ -524,6 +524,25 @@ h2 {
   fill: rgba(53, 208, 170, 0.56);
 }
 
+.dot-marks circle {
+  fill: var(--accent, #35d0aa);
+  stroke: #04100d;
+  stroke-width: 1.2;
+}
+
+.demand-zone {
+  fill: rgba(53, 208, 170, 0.16);
+  stroke: rgba(53, 208, 170, 0.5);
+  stroke-width: 1;
+}
+
+.gap-zone {
+  fill: rgba(120, 160, 255, 0.16);
+  stroke: rgba(120, 160, 255, 0.5);
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+}
+
 .tradingview-examples {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

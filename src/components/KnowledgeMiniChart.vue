@@ -109,6 +109,82 @@
         <text x="34" y="36">收窄后放量扩张</text>
       </template>
 
+      <template v-else-if="type === 'pa-structure'">
+        <path class="price-line" d="M26 140L52 110L80 132L110 92L140 116L170 70L200 100L232 52L262 84L296 40" />
+        <g class="dot-marks">
+          <circle cx="52" cy="110" r="3.2" /><circle cx="110" cy="92" r="3.2" />
+          <circle cx="170" cy="70" r="3.2" /><circle cx="232" cy="52" r="3.2" />
+        </g>
+        <text x="40" y="32">高点抬高 / 低点抬高 = 上升结构</text>
+        <text x="150" y="150">跌破前低 = 结构转弱</text>
+      </template>
+
+      <template v-else-if="type === 'pin-bar'">
+        <path class="zone green" d="M20 132H300" />
+        <text x="214" y="128">关键支撑</text>
+        <path class="price-line" d="M28 64L60 80L92 98L124 116L156 132L188 104L220 86L252 72L292 56" />
+        <g class="candles up">
+          <rect x="150" y="120" width="14" height="12" /><path d="M157 110V152" />
+          <rect x="182" y="98" width="14" height="14" /><path d="M189 90V120" />
+        </g>
+        <text x="30" y="40">长下影 = 下方买单承接</text>
+      </template>
+
+      <template v-else-if="type === 'sr-flip'">
+        <path class="zone blue" d="M20 86H300" />
+        <text x="206" y="82">阻力转支撑</text>
+        <path class="price-line" d="M26 128L56 116L86 100L116 88L146 70L176 84L206 92L236 80L266 64L296 48" />
+        <g class="candles up">
+          <rect x="168" y="80" width="13" height="20" /><path d="M174.5 72V112" />
+          <rect x="198" y="84" width="13" height="16" /><path d="M204.5 76V112" />
+        </g>
+        <path class="tag-line" d="M204 88L242 60" />
+        <text x="244" y="58">突破后回踩不破</text>
+      </template>
+
+      <template v-else-if="type === 'level-prior'">
+        <path class="zone blue" d="M20 58H300" />
+        <text x="228" y="54">前高（阻力）</text>
+        <path class="zone green" d="M20 132H300" />
+        <text x="228" y="128">前低（支撑）</text>
+        <path class="price-line" d="M28 96L60 72L92 60L112 70L140 96L168 120L196 132L224 122L252 100L286 70" />
+        <path class="tag-line" d="M104 60L138 40" />
+        <text x="140" y="38">触前高被打回</text>
+      </template>
+
+      <template v-else-if="type === 'level-zone'">
+        <rect class="demand-zone" x="20" y="112" width="280" height="26" />
+        <text x="210" y="108">需求区（大单起涨点）</text>
+        <path class="price-line" d="M30 124L52 118L72 122L92 78L112 56L140 70L168 96L196 120L220 126L248 96L286 60" />
+        <path class="tag-line" d="M92 78L70 50" />
+        <text x="30" y="46">放量拉走</text>
+        <path class="tag-line" d="M210 124L240 144" />
+        <text x="186" y="156">回到区内承接反弹</text>
+      </template>
+
+      <template v-else-if="type === 'level-round'">
+        <path class="zone amber" d="M20 84H300" />
+        <text x="206" y="80">1.0000 整数关口</text>
+        <path class="price-line" d="M28 128L60 116L92 100L124 90L156 84L184 86L212 92L244 78L276 60L296 52" />
+        <g class="candles up">
+          <rect x="150" y="82" width="13" height="14" /><path d="M156.5 64V104" />
+          <rect x="206" y="86" width="13" height="12" /><path d="M212.5 70V108" />
+        </g>
+        <text x="30" y="40">刺穿后快速收回 = 假突破</text>
+      </template>
+
+      <template v-else-if="type === 'level-gap'">
+        <rect class="gap-zone" x="20" y="86" width="280" height="22" />
+        <text x="226" y="82">跳空缺口</text>
+        <g class="candles up">
+          <rect x="60" y="112" width="13" height="20" /><path d="M66.5 104V140" />
+          <rect x="92" y="60" width="13" height="22" /><path d="M98.5 52V90" />
+          <rect x="124" y="48" width="13" height="18" /><path d="M130.5 40V72" />
+        </g>
+        <path class="price-line" d="M150 56L182 70L214 88L246 100L276 96L296 86" />
+        <text x="172" y="138">价格回到缺口区回补</text>
+      </template>
+
       <template v-else>
         <path class="band upper" d="M24 62L64 60L104 64L144 62L184 60L224 64L296 62" />
         <path class="band middle" d="M24 94L64 94L104 96L144 94L184 94L224 96L296 94" />
@@ -142,6 +218,13 @@ const titles = {
   "ma-chop": "均线缠绕示意图",
   "bb-squeeze": "布林带挤压突破示意图",
   "bb-range": "布林带区间回归示意图",
+  "pa-structure": "市场结构示意图",
+  "pin-bar": "关键 K 线反转示意图",
+  "sr-flip": "支撑阻力转换示意图",
+  "level-prior": "前高前低示意图",
+  "level-zone": "供需区示意图",
+  "level-round": "整数关口示意图",
+  "level-gap": "缺口回补示意图",
 };
 
 const chartTitle = computed(() => titles[props.type] || "交易图表示意图");

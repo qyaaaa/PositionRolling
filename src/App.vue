@@ -1,5 +1,5 @@
 <template>
-  <main class="app-shell" :class="{ 'knowledge-shell': activeTab === 'knowledge' }">
+  <main class="app-shell" :class="{ 'knowledge-shell': activeTab !== 'calculator' }">
     <section class="workspace" aria-labelledby="app-title">
       <nav class="app-tabs" aria-label="功能切换">
         <button
@@ -10,6 +10,15 @@
           @click="activeTab = 'calculator'"
         >
           滚仓计算
+        </button>
+        <button
+          class="tab-button"
+          :class="{ active: activeTab === 'dividend' }"
+          type="button"
+          :aria-selected="String(activeTab === 'dividend')"
+          @click="activeTab = 'dividend'"
+        >
+          股息复投推演
         </button>
         <button
           class="tab-button"
@@ -31,6 +40,7 @@
         @add-leg="addLeg"
         @reset="reset"
       />
+      <DividendPanel :active="activeTab === 'dividend'" />
       <KnowledgePanel :active="activeTab === 'knowledge'" />
     </section>
 
@@ -45,6 +55,7 @@ import { computed, reactive, ref, watch } from "vue";
 import CalculatorPanel from "./components/CalculatorPanel.vue";
 import InspectorPanel from "./components/InspectorPanel.vue";
 import KnowledgePanel from "./components/KnowledgePanel.vue";
+import DividendPanel from "./components/DividendPanel.vue";
 import {
   calculate,
   cloneDefaultState,
